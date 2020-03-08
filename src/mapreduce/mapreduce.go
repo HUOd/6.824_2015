@@ -63,7 +63,7 @@ type MapReduce struct {
 	// Map of registered workers that you need to keep up to date
 	Workers map[string]*WorkerInfo
 
-	// add any additional state here
+	workersChannel     chan string
 }
 
 func InitMapReduce(nmap int, nreduce int,
@@ -77,7 +77,14 @@ func InitMapReduce(nmap int, nreduce int,
 	mr.registerChannel = make(chan string)
 	mr.DoneChannel = make(chan bool)
 
-	// initialize any additional state here
+	maxJobNumber := func(nMap, nReduce int) int {
+		if nMap > nReduce {
+			return nMap
+		}
+		return nReduce
+	}
+
+	mr.workersChannel = make(chan string, maxJobNumber(mr.nMap, mr.nReduce))
 	return mr
 }
 
@@ -124,7 +131,7 @@ func (mr *MapReduce) StartRegistrationServer() {
 					conn.Close()
 				}()
 			} else {
-				DPrintf("RegistrationServer: accept error", err)
+				DPrintf("RegistrationServer: accept error: %s", err)
 				break
 			}
 		}
