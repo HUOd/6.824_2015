@@ -2,14 +2,12 @@ package mapreduce
 
 import (
 	"container/list"
-	"sync"
 )
 import "fmt"
 
 
 type WorkerInfo struct {
 	address string
-	// You can add definitions here.
 }
 
 
@@ -31,6 +29,23 @@ func (mr *MapReduce) KillWorkers() *list.List {
 	return l
 }
 
+func (mr *MapReduce) startListenWorkerRegister() {
+	Loop:
+		for {
+			select {
+				case workerAddress := <-mr.registerChannel:
+					mr.workersChannel <- workerAddress
+				case <-mr.listenerDoneChannel: {
+					break Loop
+				}
+			}
+		}
+}
+
+func (mr *MapReduce) endListenWorkerRegister() {
+	mr.listenerDoneChannel <- true
+}
+
 func (mr *MapReduce) runWorkerJobs(jobType JobType) {
 	var jobNumber int
 	var otherNumber int
@@ -44,53 +59,69 @@ func (mr *MapReduce) runWorkerJobs(jobType JobType) {
 		otherNumber = mr.nMap
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(jobNumber)
+	jobsChannel := make(chan *DoJobArgs, jobNumber)
+	doneChannel := make(chan struct{}, jobNumber)
+	completeChannel := make(chan struct{}, 1)
 
-	for i := 0; i < jobNumber; {
-		fmt.Printf("Master: Try to start %s job %d!\n", jobType, i)
-		select {
-		case workerAddress := <-mr.registerChannel:
-			mr.workersChannel <- workerAddress
-		case workerAddress := <-mr.workersChannel: {
-			go func(job int) {
-				args := &DoJobArgs{
-					File:          mr.file,
-					Operation:     jobType,
-					JobNumber:     job,
-					NumOtherPhase: otherNumber,
-				}
-				var reply DoJobReply
-				ok := call(workerAddress, "Worker.DoJob", args, &reply)
-				if !ok || !reply.OK {
-					if !ok {
-						fmt.Printf("Master call Error: Worker %s call error, Job Id %d, Job Type %s!\n",
-							workerAddress, job, Map)
-					} else {
-						fmt.Printf("DoJob Error: Worker %s reply not OK, Job Id %d, Job Type %s!\n",
-							workerAddress, job, Map)
-					}
-					return
-				}
-				mr.workersChannel <- workerAddress
-				wg.Done()
-				fmt.Printf("Master: %s Job Number %d Done!\n", jobType, job)
-			}(i)
-
-			i++
-		}
+	produceJobs := func() {
+		for i := 0; i < jobNumber; i++ {
+			args := &DoJobArgs{
+				File:	mr.file,
+				Operation:	jobType,
+				JobNumber:  i,
+				NumOtherPhase: otherNumber,
+			}
+			jobsChannel <- args
 		}
 	}
 
-	wg.Wait()
+	go produceJobs()
+
+	completed := 0
+
+	Loop:
+	for {
+		select {
+			case args := <-jobsChannel: {
+				workerAddress := <-mr.workersChannel
+				fmt.Printf("Master: Try to start %s job %d!\n", jobType, args.JobNumber)
+				go func (){
+					var reply DoJobReply
+					ok := call(workerAddress, "Worker.DoJob", args, &reply)
+					if !ok || !reply.OK{
+						jobsChannel <- args
+				 	} else{
+				 		doneChannel <- struct{}{}
+				 		fmt.Printf("Master: %s Job Number %d Done!\n", jobType, args.JobNumber)
+				 	}
+				 	mr.workersChannel <- workerAddress
+				}()
+			}
+			case <-doneChannel: {
+				completed += 1
+				fmt.Printf("Master: completed %d %s jobs!\n", completed, jobType)
+				if completed == jobNumber {
+					completeChannel <- struct{}{}
+				}
+			}
+			case <-completeChannel: {
+				fmt.Printf("Master: completed all %s jobs!\n", jobType)
+				break Loop
+			}
+		}
+	}
 }
 
 
 func (mr *MapReduce) RunMaster() *list.List {
 	fmt.Printf("Master: Map Reduce has %d map jobs, %d reduce jobs!\n", mr.nMap, mr.nReduce)
 
+	go mr.startListenWorkerRegister()
+
 	mr.runWorkerJobs(Map)
 	mr.runWorkerJobs(Reduce)
+
+	mr.endListenWorkerRegister()
 
 	return mr.KillWorkers()
 }

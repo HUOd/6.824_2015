@@ -63,7 +63,8 @@ type MapReduce struct {
 	// Map of registered workers that you need to keep up to date
 	Workers map[string]*WorkerInfo
 
-	workersChannel     chan string
+	workersChannel       chan string
+	listenerDoneChannel  chan bool
 }
 
 func InitMapReduce(nmap int, nreduce int,
@@ -85,6 +86,7 @@ func InitMapReduce(nmap int, nreduce int,
 	}
 
 	mr.workersChannel = make(chan string, maxJobNumber(mr.nMap, mr.nReduce))
+	mr.listenerDoneChannel = make(chan bool)
 	return mr
 }
 
